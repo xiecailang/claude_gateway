@@ -9,8 +9,22 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from config import GatewayConfig
-from converter import build_upstream_request, build_non_streaming_response
-from logger import setup_logger, log_request, log_response, log_error
+from converter import (
+    build_upstream_request,
+    build_non_streaming_response,
+    extract_text_content,
+    build_prompt as _build_prompt,
+)
+from logger import (
+    setup_logger,
+    setup_debug_logger,
+    log_request,
+    log_response,
+    log_error,
+    log_debug_request,
+    log_debug_response,
+    log_debug_streaming_response,
+)
 from sse_handler import SSEAccumulator, handle_streaming
 
 
@@ -18,6 +32,7 @@ from sse_handler import SSEAccumulator, handle_streaming
 async def lifespan(app: FastAPI):
     app.state.http_client = httpx.AsyncClient(timeout=GatewayConfig.timeout)
     app.state.logger = setup_logger()
+    app.state.debug_logger = setup_debug_logger()
     yield
     await app.state.http_client.aclose()
 
@@ -40,23 +55,42 @@ async def count_tokens():
 async def handle_messages(request: Request):
     request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
     logger = request.app.state.logger
+    debug_logger = request.app.state.debug_logger
     http_client = request.app.state.http_client
     start_time = time.monotonic()
 
     body = await request.json()
     log_request(logger, request_id, body)
 
+    # Build prompt for debug logging
+    system_raw = body.get("system", "")
+    if isinstance(system_raw, list):
+        system_raw_str = extract_text_content(system_raw)
+    else:
+        system_raw_str = system_raw
+    messages = body.get("messages", [])
+    built_prompt = _build_prompt(system_raw_str, messages)
+
     upstream_url = f"{GatewayConfig.upstream_base_url}/v1/completions"
     upstream_body = build_upstream_request(body)
+
+    # Debug log the full request
+    log_debug_request(
+        debug_logger, request_id, body.get("model"),
+        system_raw, messages, built_prompt,
+        upstream_url, upstream_body,
+    )
 
     try:
         if upstream_body.get("stream"):
             return await _handle_streaming(
-                logger, http_client, request_id, upstream_url, upstream_body, start_time
+                logger, debug_logger, http_client, request_id,
+                upstream_url, upstream_body, start_time,
             )
         else:
             return await _handle_non_streaming(
-                logger, http_client, request_id, upstream_url, upstream_body, start_time
+                logger, debug_logger, http_client, request_id,
+                upstream_url, upstream_body, start_time,
             )
     except httpx.ConnectError as e:
         duration = (time.monotonic() - start_time) * 1000
@@ -100,7 +134,7 @@ async def handle_messages(request: Request):
         )
 
 
-async def _handle_streaming(logger, http_client, request_id, url, body, start_time):
+async def _handle_streaming(logger, debug_logger, http_client, request_id, url, body, start_time):
     response = await http_client.post(url, json=body)
 
     accumulator = SSEAccumulator()
@@ -122,6 +156,12 @@ async def _handle_streaming(logger, http_client, request_id, url, body, start_ti
                 accumulator.finish_reason,
                 duration,
             )
+            # Debug log the full streaming response
+            log_debug_streaming_response(
+                debug_logger, request_id,
+                accumulator.full_text, accumulator.usage,
+                accumulator.finish_reason, duration,
+            )
 
     return StreamingResponse(
         event_generator(),
@@ -134,7 +174,7 @@ async def _handle_streaming(logger, http_client, request_id, url, body, start_ti
     )
 
 
-async def _handle_non_streaming(logger, http_client, request_id, url, body, start_time):
+async def _handle_non_streaming(logger, debug_logger, http_client, request_id, url, body, start_time):
     response = await http_client.post(url, json=body)
     duration = (time.monotonic() - start_time) * 1000
     upstream_body = response.json()
@@ -154,6 +194,12 @@ async def _handle_non_streaming(logger, http_client, request_id, url, body, star
         upstream_body.get("usage"),
         "end_turn",
         duration,
+    )
+
+    # Debug log the full response
+    log_debug_response(
+        debug_logger, request_id, text,
+        upstream_body.get("usage"), anthropic_response, duration,
     )
 
     return JSONResponse(
