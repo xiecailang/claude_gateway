@@ -11,11 +11,12 @@ def setup_logger() -> logging.Logger:
     logger = logging.getLogger("gateway")
     logger.setLevel(logging.INFO)
 
-    log_dir = os.path.dirname(GatewayConfig.log_file)
+    log_file = GatewayConfig.log_file
+    log_dir = os.path.dirname(log_file)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
 
-    handler = logging.FileHandler(GatewayConfig.log_file)
+    handler = logging.FileHandler(log_file)
     handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
     return logger
@@ -26,12 +27,13 @@ def setup_debug_logger() -> logging.Logger:
     logger = logging.getLogger("gateway_debug")
     logger.setLevel(logging.DEBUG)
 
-    log_dir = os.path.dirname(GatewayConfig.log_file)
+    log_file = GatewayConfig.log_file
+    log_dir = os.path.dirname(log_file)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
 
-    log_file = os.path.join(log_dir, "gateway.log")
-    handler = logging.FileHandler(log_file, mode="a")
+    debug_log_file = os.path.join(log_dir, "gateway.log")
+    handler = logging.FileHandler(debug_log_file, mode="a")
     handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
     return logger
@@ -40,6 +42,7 @@ def setup_debug_logger() -> logging.Logger:
 def log_debug_request(
     logger: logging.Logger,
     request_id: str,
+    raw_body: dict,
     model: str,
     system_raw: str | list,
     messages: list,
@@ -74,6 +77,7 @@ def log_debug_request(
         "event": "DEBUG_REQUEST",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "request_id": request_id,
+        "raw_body_all_keys": list(raw_body.keys()),
         "model": model,
         "system": {
             "type": sys_type,
@@ -94,6 +98,15 @@ def log_debug_request(
         "upstream_body_keys": list(upstream_body.keys()),
         "upstream_body_prompt_len": len(upstream_body.get("prompt", "")),
     }
+
+    # Include tools and tool_choice if present in original request
+    if "tools" in raw_body:
+        obj["tools"] = raw_body["tools"]
+    if "tool_choice" in raw_body:
+        obj["tool_choice"] = raw_body["tool_choice"]
+    if "max_tokens" in raw_body:
+        obj["max_tokens"] = raw_body["max_tokens"]
+
     logger.debug(json.dumps(obj, ensure_ascii=False))
 
 

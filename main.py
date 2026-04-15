@@ -69,15 +69,16 @@ async def handle_messages(request: Request):
     else:
         system_raw_str = system_raw
     messages = body.get("messages", [])
-    built_prompt = _build_prompt(system_raw_str, messages)
+    tools = body.get("tools")
+    built_prompt = _build_prompt(system_raw_str, messages, tools)
 
     upstream_url = f"{GatewayConfig.upstream_base_url}/v1/completions"
     upstream_body = build_upstream_request(body)
 
     # Debug log the full request
     log_debug_request(
-        debug_logger, request_id, body.get("model"),
-        system_raw, messages, built_prompt,
+        debug_logger, request_id, body,
+        body.get("model"), system_raw, messages, built_prompt,
         upstream_url, upstream_body,
     )
 

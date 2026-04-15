@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import uuid
+import json
 from config import GatewayConfig
 
 
@@ -19,11 +19,35 @@ def extract_text_content(content: str | list) -> str:
     return str(content)
 
 
-def build_prompt(system: str, messages: list[dict]) -> str:
-    """Convert Anthropic messages into a single prompt string for /v1/completions."""
+def build_tools_section(tools: list[dict]) -> str:
+    """Convert Anthropic tools into a text section for the system prompt."""
+    if not tools:
+        return ""
+    parts = []
+    parts.append("# Available Tools")
+    for tool in tools:
+        name = tool.get("name", "unknown")
+        desc = tool.get("description", "")
+        input_schema = tool.get("input_schema", {})
+        parts.append(f"\n## {name}\n{desc}")
+        if input_schema and input_schema.get("properties"):
+            parts.append("\nArguments:")
+            for pname, pdef in input_schema.get("properties", {}).items():
+                required = pname in input_schema.get("required", [])
+                ptype = pdef.get("type", "any")
+                req_str = "(required)" if required else "(optional)"
+                parts.append(f"  - {pname} ({ptype}) {req_str}")
+    return "\n".join(parts)
+
+
+def build_prompt(system: str, messages: list[dict], tools: list[dict] | None = None) -> str:
+    """Convert Anthropic messages and tools into a single prompt string for /v1/completions."""
     parts = []
     if system:
         parts.append(system)
+    tools_section = build_tools_section(tools or [])
+    if tools_section:
+        parts.append(tools_section)
     for msg in messages:
         role = msg.get("role", "user")
         text = extract_text_content(msg.get("content", ""))
@@ -38,11 +62,16 @@ def build_upstream_request(
     # system can be a string or list of content blocks (Claude Code sends list)
     system_raw = anthropic_body.get("system", "")
     if isinstance(system_raw, list):
-        system_raw = extract_text_content(system_raw)
+        system_raw_str = extract_text_content(system_raw)
+    else:
+        system_raw_str = system_raw
 
+    tools = anthropic_body.get("tools")
+    messages = anthropic_body.get("messages", [])
     prompt = build_prompt(
-        system=system_raw,
-        messages=anthropic_body.get("messages", []),
+        system=system_raw_str,
+        messages=messages,
+        tools=tools,
     )
     is_stream = anthropic_body.get("stream", False)
     body = {
