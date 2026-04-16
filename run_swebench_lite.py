@@ -59,11 +59,12 @@ def clone_and_setup(task: dict) -> str | None:
 
     task_dir.mkdir(parents=True, exist_ok=True)
 
-    # Use git clone (full, as we need the specific base commit)
+    # Use git clone via SSH (HTTPS port 443 is blocked)
     try:
         log(f"  Cloning {repo}@{base_commit[:8]}...")
+        ssh_url = f"git@github.com:{repo}.git"
         subprocess.run(
-            ["git", "clone", f"https://github.com/{repo}.git", str(task_dir)],
+            ["git", "clone", ssh_url, str(task_dir)],
             check=True, timeout=600
         )
         subprocess.run(
