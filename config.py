@@ -52,3 +52,11 @@ class GatewayConfig:
             return _resolve_log_path(f"logs/{tid}/gateway.log")
         base = os.getenv("GATEWAY_LOG_FILE", "logs/requests.log")
         return _resolve_log_path(os.path.join(os.path.dirname(base), "gateway.log"))
+
+    @property
+    def org_log_file(self) -> str:
+        tid = self.task_id
+        if tid:
+            return _resolve_log_path(f"logs/{tid}/org_gateway.log")
+        base = os.getenv("GATEWAY_LOG_FILE", "logs/requests.log")
+        return _resolve_log_path(os.path.join(os.path.dirname(base), "org_gateway.log"))

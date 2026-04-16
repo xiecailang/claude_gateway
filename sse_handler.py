@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
+from datetime import datetime, timezone
 import httpx
 from converter import map_finish_reason
+from logger import log_org_stream_chunk
 
 
 def _sse_event(data: dict) -> str:
@@ -47,22 +50,31 @@ def message_delta_event(
 
 
 class SSEAccumulator:
-    """Holds accumulated text, usage, and finish_reason for logging."""
+    """Holds accumulated text, usage, finish_reason, and timing for logging.
+
+    Timing fields (ISO 8601 timestamps, same format as "timestamp" in logs):
+    - first_token_ts: wall-clock time of first content/token delta
+    - last_token_ts: wall-clock time of last content/token delta
+    """
     full_text: str = ""
     usage: dict | None = None
     finish_reason: str | None = None
+    first_token_ts: float | None = None
+    last_token_ts: float | None = None
 
 
 async def handle_streaming(
     response: httpx.Response,
     accumulator: SSEAccumulator,
+    org_logger: logging.Logger | None = None,
+    request_id: str | None = None,
 ) -> httpx.Response | None:
     """
     Consume upstream chat/completions SSE stream and yield Anthropic-formatted SSE events.
 
     Parses chat.completion.chunk format (delta.content, delta.reasoning,
     delta.tool_calls) and converts to Anthropic SSE events.
-    Updates `accumulator` with full_text, usage, and finish_reason.
+    Updates `accumulator` with full_text, usage, finish_reason, and timing metrics.
     """
     sent_content_block_start = False
     tool_block_starts: set[int] = set()
@@ -77,6 +89,10 @@ async def handle_streaming(
             # Skip empty lines and SSE comments
             if not line or line.startswith(":"):
                 continue
+
+            # Log raw SSE line to org_gateway.log
+            if org_logger and request_id:
+                log_org_stream_chunk(org_logger, request_id, line)
 
             # Parse data: prefix
             if not line.startswith("data: "):
@@ -117,7 +133,6 @@ async def handle_streaming(
                 # Also handle reasoning (some models put reasoning in delta.reasoning)
                 reasoning = delta.get("reasoning", "") or ""
                 if reasoning:
-                    # Prefix reasoning with a marker so client can distinguish
                     text = reasoning + text
 
                 # Check for finish_reason on this chunk
@@ -125,8 +140,15 @@ async def handle_streaming(
                 if fr:
                     accumulator.finish_reason = map_finish_reason(fr)
 
-                # Emit events for text
+                # Emit events for text and track timing
                 if text:
+                    now = datetime.now(timezone.utc).isoformat()
+
+                    if accumulator.first_token_ts is None:
+                        accumulator.first_token_ts = now
+
+                    accumulator.last_token_ts = now
+
                     if not sent_content_block_start:
                         yield content_block_start_event()
                         sent_content_block_start = True
@@ -137,6 +159,11 @@ async def handle_streaming(
                 # Handle tool_calls in delta
                 tool_calls = delta.get("tool_calls", [])
                 if tool_calls:
+                    now = datetime.now(timezone.utc).isoformat()
+                    if accumulator.first_token_ts is None:
+                        accumulator.first_token_ts = now
+                    accumulator.last_token_ts = now
+
                     for tc in tool_calls:
                         index = tc.get("index", 0)
                         function_info = tc.get("function", {})

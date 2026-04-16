@@ -18,12 +18,16 @@ from converter import (
 from logger import (
     setup_logger,
     setup_debug_logger,
+    setup_org_logger,
     log_request,
     log_response,
     log_error,
     log_debug_request,
     log_debug_response,
     log_debug_streaming_response,
+    log_org_request,
+    log_org_response,
+    log_org_stream_chunk,
 )
 from sse_handler import SSEAccumulator, handle_streaming
 
@@ -33,6 +37,7 @@ async def lifespan(app: FastAPI):
     app.state.http_client = httpx.AsyncClient(timeout=GatewayConfig.timeout)
     app.state.logger = setup_logger()
     app.state.debug_logger = setup_debug_logger()
+    app.state.org_logger = setup_org_logger()
     yield
     await app.state.http_client.aclose()
 
@@ -61,6 +66,8 @@ async def handle_messages(request: Request):
 
     body = await request.json()
     log_request(logger, request_id, body)
+    org_logger = request.app.state.org_logger
+    log_org_request(org_logger, request_id, body)
 
     # Build prompt preview for debug logging
     system_raw = body.get("system", "")
@@ -83,12 +90,12 @@ async def handle_messages(request: Request):
     try:
         if upstream_body.get("stream"):
             return await _handle_streaming(
-                logger, debug_logger, http_client, request_id,
+                logger, debug_logger, org_logger, http_client, request_id,
                 upstream_url, upstream_body, start_time,
             )
         else:
             return await _handle_non_streaming(
-                logger, debug_logger, http_client, request_id,
+                logger, debug_logger, org_logger, http_client, request_id,
                 upstream_url, upstream_body, start_time,
             )
     except httpx.ConnectError as e:
@@ -133,14 +140,14 @@ async def handle_messages(request: Request):
         )
 
 
-async def _handle_streaming(logger, debug_logger, http_client, request_id, url, body, start_time):
+async def _handle_streaming(logger, debug_logger, org_logger, http_client, request_id, url, body, start_time):
     response = await http_client.post(url, json=body)
 
     accumulator = SSEAccumulator()
 
     async def event_generator():
         try:
-            async for event in handle_streaming(response, accumulator):
+            async for event in handle_streaming(response, accumulator, org_logger, request_id):
                 yield event
         except Exception:
             pass
@@ -154,11 +161,15 @@ async def _handle_streaming(logger, debug_logger, http_client, request_id, url, 
                 accumulator.usage,
                 accumulator.finish_reason,
                 duration,
+                first_token_ts=accumulator.first_token_ts,
+                last_token_ts=accumulator.last_token_ts,
             )
             log_debug_streaming_response(
                 debug_logger, request_id,
                 accumulator.full_text, accumulator.usage,
                 accumulator.finish_reason, duration,
+                first_token_ts=accumulator.first_token_ts,
+                last_token_ts=accumulator.last_token_ts,
             )
 
     return StreamingResponse(
@@ -172,10 +183,12 @@ async def _handle_streaming(logger, debug_logger, http_client, request_id, url, 
     )
 
 
-async def _handle_non_streaming(logger, debug_logger, http_client, request_id, url, body, start_time):
+async def _handle_non_streaming(logger, debug_logger, org_logger, http_client, request_id, url, body, start_time):
     response = await http_client.post(url, json=body)
     duration = (time.monotonic() - start_time) * 1000
     upstream_body = response.json()
+
+    log_org_response(org_logger, request_id, upstream_body)
 
     anthropic_response = build_non_streaming_response(
         request_id, upstream_body, finish_reason="end_turn"

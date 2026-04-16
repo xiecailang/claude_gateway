@@ -160,6 +160,8 @@ def log_debug_streaming_response(
     usage: dict | None,
     finish_reason: str | None,
     duration_ms: float,
+    first_token_ts: float | None = None,
+    last_token_ts: float | None = None,
 ) -> None:
     """Log streaming response details to gateway.log."""
     obj = {
@@ -172,6 +174,10 @@ def log_debug_streaming_response(
         "finish_reason": finish_reason,
         "duration_ms": round(duration_ms, 1),
     }
+    if first_token_ts is not None:
+        obj["first_token_ts"] = first_token_ts
+    if last_token_ts is not None:
+        obj["last_token_ts"] = last_token_ts
     logger.debug(json.dumps(obj, ensure_ascii=False))
 
 
@@ -199,6 +205,8 @@ def log_response(
     finish_reason: str | None,
     duration_ms: float,
     max_length: int = GatewayConfig.max_log_text_length,
+    first_token_ts: float | None = None,
+    last_token_ts: float | None = None,
 ) -> None:
     if len(text) > max_length:
         text = text[:max_length] + "...(truncated)"
@@ -213,6 +221,10 @@ def log_response(
         "finish_reason": finish_reason,
         "duration_ms": round(duration_ms, 1),
     }
+    if first_token_ts is not None:
+        obj["first_token_ts"] = first_token_ts
+    if last_token_ts is not None:
+        obj["last_token_ts"] = last_token_ts
     logger.info(json.dumps(obj, ensure_ascii=False))
 
 
@@ -232,3 +244,58 @@ def log_error(
         "duration_ms": round(duration_ms, 1),
     }
     logger.info(json.dumps(obj, ensure_ascii=False))
+
+
+def setup_org_logger() -> logging.Logger:
+    """Setup org_gateway.log for raw request/response recording."""
+    cfg = GatewayConfig()
+    handler = DynamicFileHandler(lambda: cfg.org_log_file)
+    logger = logging.getLogger("gateway_org")
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    return logger
+
+
+def log_org_request(
+    logger: logging.Logger,
+    request_id: str,
+    raw_body: dict,
+) -> None:
+    """Log the raw incoming request body as-is."""
+    obj = {
+        "event": "org_request",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id,
+        "raw_body": raw_body,
+    }
+    logger.debug(json.dumps(obj, ensure_ascii=False))
+
+
+def log_org_response(
+    logger: logging.Logger,
+    request_id: str,
+    raw_body: dict,
+) -> None:
+    """Log the raw upstream non-streaming response body as-is."""
+    obj = {
+        "event": "org_response",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id,
+        "raw_body": raw_body,
+    }
+    logger.debug(json.dumps(obj, ensure_ascii=False))
+
+
+def log_org_stream_chunk(
+    logger: logging.Logger,
+    request_id: str,
+    raw_line: str,
+) -> None:
+    """Log a single raw SSE chunk from the upstream streaming response."""
+    obj = {
+        "event": "org_stream_chunk",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id,
+        "raw_line": raw_line,
+    }
+    logger.debug(json.dumps(obj, ensure_ascii=False))
