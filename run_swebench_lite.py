@@ -180,7 +180,15 @@ Work in the current directory. Explore the codebase, find the issue, fix it, and
             except Exception:
                 pass
 
-        # Copy gateway logs to task dir
+        # Save full stdout/stderr trace as JSONL
+        cc_trace_path = log_dir / "cc_trace.jsonl"
+        with open(cc_trace_path, "w") as tf:
+            for line in proc.stdout.splitlines():
+                entry = {"timestamp": datetime.now(timezone.utc).isoformat(), "stream": "stdout", "line": line}
+                tf.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            for line in proc.stderr.splitlines():
+                entry = {"timestamp": datetime.now(timezone.utc).isoformat(), "stream": "stderr", "line": line}
+                tf.write(json.dumps(entry, ensure_ascii=False) + "\n")
         gw_requests = log_dir / "requests.log"
         gw_debug = log_dir / "gateway.log"
         if gw_requests.exists():
