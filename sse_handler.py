@@ -58,12 +58,14 @@ async def handle_streaming(
     accumulator: SSEAccumulator,
 ) -> httpx.Response | None:
     """
-    Consume upstream SSE stream and yield Anthropic-formatted SSE events.
+    Consume upstream chat/completions SSE stream and yield Anthropic-formatted SSE events.
 
+    Parses chat.completion.chunk format (delta.content, delta.reasoning,
+    delta.tool_calls) and converts to Anthropic SSE events.
     Updates `accumulator` with full_text, usage, and finish_reason.
-    Yields SSE-formatted strings suitable for StreamingResponse.
     """
     sent_content_block_start = False
+    tool_block_starts: set[int] = set()
     buffer = ""
 
     async for chunk in response.aiter_text():
@@ -92,7 +94,7 @@ async def handle_streaming(
             except json.JSONDecodeError:
                 continue
 
-            # Check for usage-only chunk (empty choices)
+            # Check for usage-only chunk (empty choices with usage)
             choices = data.get("choices") or []
             if not choices and data.get("usage"):
                 u = data["usage"]
@@ -107,22 +109,63 @@ async def handle_streaming(
             # Regular completion chunk
             if choices:
                 choice = choices[0]
-                text = choice.get("text", "")
+                delta = choice.get("delta", {})
 
-                # First text: emit content_block_start
-                if not sent_content_block_start:
-                    yield content_block_start_event()
-                    sent_content_block_start = True
+                # Handle text content in delta
+                text = delta.get("content", "") or ""
 
-                # Emit delta text
-                if text:
-                    yield content_block_delta_event(text)
-                    accumulator.full_text += text
+                # Also handle reasoning (some models put reasoning in delta.reasoning)
+                reasoning = delta.get("reasoning", "") or ""
+                if reasoning:
+                    # Prefix reasoning with a marker so client can distinguish
+                    text = reasoning + text
 
-                # Check for finish_reason
+                # Check for finish_reason on this chunk
                 fr = choice.get("finish_reason")
                 if fr:
                     accumulator.finish_reason = map_finish_reason(fr)
+
+                # Emit events for text
+                if text:
+                    if not sent_content_block_start:
+                        yield content_block_start_event()
+                        sent_content_block_start = True
+
+                    yield content_block_delta_event(text)
+                    accumulator.full_text += text
+
+                # Handle tool_calls in delta
+                tool_calls = delta.get("tool_calls", [])
+                if tool_calls:
+                    for tc in tool_calls:
+                        index = tc.get("index", 0)
+                        function_info = tc.get("function", {})
+                        name = function_info.get("name", "")
+                        arguments_str = function_info.get("arguments", "")
+
+                        # Emit content_block_start only once per tool index
+                        if index not in tool_block_starts:
+                            tool_block_starts.add(index)
+                            tool_block = {
+                                "type": "content_block_start",
+                                "index": index + 1,
+                                "content_block": {
+                                    "type": "tool_use",
+                                    "id": tc.get("id", ""),
+                                    "name": name,
+                                    "input": {},
+                                },
+                            }
+                            yield _sse_event(tool_block)
+
+                        # Always emit delta for partial JSON
+                        if arguments_str:
+                            delta_block = {
+                                "type": "content_block_delta",
+                                "index": index + 1,
+                                "delta": {"type": "input_json_delta", "partial_json": arguments_str},
+                            }
+                            yield _sse_event(delta_block)
 
     # Stream ended without [DONE], flush
     yield "\n\n"

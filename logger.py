@@ -7,34 +7,55 @@ from datetime import datetime, timezone
 from config import GatewayConfig
 
 
+class DynamicFileHandler(logging.Handler):
+    """A handler that resolves the log file path on each emit.
+
+    This allows per-task log routing: the task_id file may be written
+    after the handler is created, and we need to pick it up.
+    """
+
+    def __init__(self, resolve_path):
+        super().__init__()
+        self._resolve_path = resolve_path
+        self._current_path = None
+        self._current_handler = None
+        self.setFormatter(logging.Formatter("%(message)s"))
+
+    def emit(self, record):
+        path = self._resolve_path()
+        if path != self._current_path:
+            # Ensure directory exists
+            log_dir = os.path.dirname(path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            self._current_path = path
+            if self._current_handler:
+                self._current_handler.close()
+            self._current_handler = logging.FileHandler(path, mode="a")
+            self._current_handler.setFormatter(self.formatter)
+        self._current_handler.emit(record)
+
+    def close(self):
+        if self._current_handler:
+            self._current_handler.close()
+        super().close()
+
+
 def setup_logger() -> logging.Logger:
+    cfg = GatewayConfig()
+    handler = DynamicFileHandler(lambda: cfg.log_file)
     logger = logging.getLogger("gateway")
     logger.setLevel(logging.INFO)
-
-    log_file = GatewayConfig.log_file
-    log_dir = os.path.dirname(log_file)
-    if log_dir:
-        os.makedirs(log_dir, exist_ok=True)
-
-    handler = logging.FileHandler(log_file)
-    handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
     return logger
 
 
 def setup_debug_logger() -> logging.Logger:
     """Setup gateway.log for full request/response debugging."""
+    cfg = GatewayConfig()
+    handler = DynamicFileHandler(lambda: cfg.debug_log_file)
     logger = logging.getLogger("gateway_debug")
     logger.setLevel(logging.DEBUG)
-
-    log_file = GatewayConfig.log_file
-    log_dir = os.path.dirname(log_file)
-    if log_dir:
-        os.makedirs(log_dir, exist_ok=True)
-
-    debug_log_file = os.path.join(log_dir, "gateway.log")
-    handler = logging.FileHandler(debug_log_file, mode="a")
-    handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
     return logger
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -12,8 +13,7 @@ from config import GatewayConfig
 from converter import (
     build_upstream_request,
     build_non_streaming_response,
-    extract_text_content,
-    build_prompt as _build_prompt,
+    convert_messages,
 )
 from logger import (
     setup_logger,
@@ -47,7 +47,7 @@ async def health():
 
 @app.get("/v1/messages/count")
 async def count_tokens():
-    """Mock token counting endpoint. vLLM completions does not support this."""
+    """Mock token counting endpoint. vLLM does not support this natively."""
     return JSONResponse(content={"input_tokens": 0, "output_tokens": 0})
 
 
@@ -62,17 +62,15 @@ async def handle_messages(request: Request):
     body = await request.json()
     log_request(logger, request_id, body)
 
-    # Build prompt for debug logging
+    # Build prompt preview for debug logging
     system_raw = body.get("system", "")
-    if isinstance(system_raw, list):
-        system_raw_str = extract_text_content(system_raw)
-    else:
-        system_raw_str = system_raw
     messages = body.get("messages", [])
-    tools = body.get("tools")
-    built_prompt = _build_prompt(system_raw_str, messages, tools)
+    openai_messages = convert_messages(system_raw, messages)
+    built_prompt = "\n".join(
+        str(m.get("content", ""))[:200] for m in openai_messages if isinstance(m.get("content"), str)
+    )
 
-    upstream_url = f"{GatewayConfig.upstream_base_url}/v1/completions"
+    upstream_url = f"{GatewayConfig.upstream_base_url}/v1/chat/completions"
     upstream_body = build_upstream_request(body)
 
     # Debug log the full request
@@ -157,7 +155,6 @@ async def _handle_streaming(logger, debug_logger, http_client, request_id, url, 
                 accumulator.finish_reason,
                 duration,
             )
-            # Debug log the full streaming response
             log_debug_streaming_response(
                 debug_logger, request_id,
                 accumulator.full_text, accumulator.usage,
@@ -184,8 +181,13 @@ async def _handle_non_streaming(logger, debug_logger, http_client, request_id, u
         request_id, upstream_body, finish_reason="end_turn"
     )
 
+    # Extract text from choices for logging
     choices = upstream_body.get("choices", [])
-    text = choices[0].get("text", "") if choices else ""
+    message = choices[0].get("message", {}) if choices else {}
+    text = message.get("content", "") or ""
+    tool_calls = message.get("tool_calls", [])
+    if tool_calls:
+        text += f"\n[tool_calls: {json.dumps(tool_calls, ensure_ascii=False)}]"
 
     log_response(
         logger,
@@ -193,11 +195,10 @@ async def _handle_non_streaming(logger, debug_logger, http_client, request_id, u
         200,
         text,
         upstream_body.get("usage"),
-        "end_turn",
+        anthropic_response.get("stop_reason"),
         duration,
     )
 
-    # Debug log the full response
     log_debug_response(
         debug_logger, request_id, text,
         upstream_body.get("usage"), anthropic_response, duration,
